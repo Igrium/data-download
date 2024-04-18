@@ -3,14 +3,22 @@ package com.igrium.datadownload;
 import static net.minecraft.server.command.CommandManager.argument;
 import static net.minecraft.server.command.CommandManager.literal;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 
 import com.igrium.datadownload.filebin.FilebinApi;
+import com.igrium.datadownload.filebin.FilebinMeta;
+import com.igrium.datadownload.filebin.HttpException;
+import com.igrium.datadownload.filebin.FilebinMeta.FilebinFileMeta;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -29,7 +37,9 @@ import net.minecraft.text.HoverEvent;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Style;
 import net.minecraft.text.Text;
+import net.minecraft.text.Texts;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Util;
 
 public class DataCommandExtras {
 
@@ -41,22 +51,107 @@ public class DataCommandExtras {
         LiteralArgumentBuilder<ServerCommandSource> data = literal("data")
                 .requires(source -> source.hasPermissionLevel(2));
 
-        for (ObjectType objectType : DataCommand.TARGET_OBJECT_TYPES) {
+        for (ObjectType objectType : DataCommand.SOURCE_OBJECT_TYPES) {
             data.then(
                 objectType.addArgumentsToBuilder(literal("export"), builder -> builder.then(
                     argument("compress", BoolArgumentType.bool()).executes(
-                        context -> download(context, BoolArgumentType.getBool(context, "compress"), objectType.getObject(context))
+                        context -> export(context, BoolArgumentType.getBool(context, "compress"), objectType.getObject(context))
                     )
                 ).executes(
-                    context -> download(context, false, objectType.getObject(context))
+                    context -> export(context, false, objectType.getObject(context))
                 ))
             );
         }
+
+        for (ObjectType objectType : DataCommand.TARGET_OBJECT_TYPES) {
+            data.then(
+                objectType.addArgumentsToBuilder(literal("import"), builder -> builder.then(
+                    literal("from").then(
+                        literal("filebin").then(
+                            argument("binId", StringArgumentType.string()).executes(
+                                context -> importFilebin(context, objectType.getObject(context))
+                            )
+                        )
+                    ).then(
+                        literal("url")
+                    )
+                ))
+            );
+        }
+
+        // for (ObjectType objectType : DataCommand.O)
         
         dispatcher.register(data);
     }
+
+    private static class DownloadException extends RuntimeException {
+        DownloadException(String message) {
+            super(message);
+        }
+
+        // DownloadException(String message, Throwable cause) {
+        //     super(message, cause);
+        // }
+    }
+
+    private static int importFilebin(CommandContext<ServerCommandSource> context, DataCommandObject object) throws CommandSyntaxException {
+        String binId = StringArgumentType.getString(context, "binId");
+        FilebinApi filebin = DataDownload.getInstance().getFilebin();
+
+        context.getSource().sendFeedback(() -> Text.literal("Importing data..."), false);
+
+        filebin.getBinMeta(binId).thenApplyAsync(bin -> {
+
+            var file = getBestFile(bin);
+            try(InputStream in = new BufferedInputStream(filebin.download(bin.bin.id, file.filename))) {
+                return NbtIo.readCompound(new DataInputStream(in));
+
+            } catch (IOException e) {
+                throw new CompletionException(e);
+            }
+        }, Util.getIoWorkerExecutor()).whenCompleteAsync((nbt, e) -> {
+
+            if (e != null) {
+                e = FilebinApi.decomposeCompletionException(e);
+                
+                if (e instanceof DownloadException) {
+                    context.getSource().sendError(Text.literal(e.getMessage()));
+                } else if (e instanceof HttpException http && http.getStatusCode() == 404) {
+                    context.getSource().sendError(Text.literal("The supplied bin was not found."));
+                } else {
+                    context.getSource().sendError(Text.literal("An error occured importing the file: " + e.getMessage()));
+                    DataDownload.LOGGER.error("Error importing nbt file.", e);
+                }
+                return;
+            }
+
+            try {
+                object.setNbt(nbt);
+            } catch (CommandSyntaxException e1) {
+                context.getSource().sendError(Texts.toText(e1.getRawMessage()));
+            }
+
+            context.getSource().sendFeedback(() -> Text.literal("Imported nbt data."), true);
+
+        }, context.getSource().getServer());
+
+        return 1;
+    }
+
+    private static FilebinFileMeta getBestFile(FilebinMeta bin) {
+        if (bin.files == null || bin.files.isEmpty()) {
+            throw new DownloadException("The bin did not contain any files.");
+        }
+
+        for (var f : bin.files)  {
+            if (f.filename.endsWith(".nbt")) {
+                return f;
+            }
+        }
+        return bin.files.get(0);
+    }
     
-    private static int download(CommandContext<ServerCommandSource> context, boolean compress, DataCommandObject object) throws CommandSyntaxException {
+    private static int export(CommandContext<ServerCommandSource> context, boolean compress, DataCommandObject object) throws CommandSyntaxException {
         UUID uuid = UUID.randomUUID();
         FilebinApi filebin = DataDownload.getInstance().getFilebin();
 
@@ -67,11 +162,7 @@ public class DataCommandExtras {
 
         try(ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             
-            if (compress) {
-                NbtIo.writeCompressed(nbt, out);
-            } else {
-                NbtIo.write(nbt, new DataOutputStream(out));
-            }
+            NbtIo.write(nbt, new DataOutputStream(out));
 
             data = out.toByteArray();
         } catch (IOException e) {
@@ -92,6 +183,7 @@ public class DataCommandExtras {
 
         return 1;
     }
+    
 
     private static Text getDownloadLink(String bin, String file, FilebinApi filebin) {
         String directLink = filebin.getFile(bin, file).toString();

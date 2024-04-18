@@ -25,7 +25,7 @@ public class HttpException extends IOException {
         this.statusCode = statusCode;
     }
 
-    public int getstatusCode() {
+    public int getStatusCode() {
         return statusCode;
     }
 }
