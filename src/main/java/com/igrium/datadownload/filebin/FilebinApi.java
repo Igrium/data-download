@@ -38,8 +38,8 @@ public class FilebinApi {
                 .followRedirects(Redirect.ALWAYS)
                 .executor(Util.getIoWorkerExecutor())
                 .build();
-        
-                logger = LoggerFactory.getLogger("Filebin API (" + url + ")");
+
+        logger = LoggerFactory.getLogger("Filebin API (" + url + ")");
     }
 
     public FilebinApi(String url) throws URISyntaxException {

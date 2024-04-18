@@ -54,12 +54,14 @@ public class DataCommandExtras {
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher, CommandRegistryAccess registryAccess,
             RegistrationEnvironment environment) {
         
+        int permissionLevel = DataDownload.getInstance().getConfig().permissionLevel;
+        
         LiteralArgumentBuilder<ServerCommandSource> data = literal("data")
                 .requires(source -> source.hasPermissionLevel(2));
 
         for (ObjectType objectType : DataCommand.SOURCE_OBJECT_TYPES) {
             data.then(
-                objectType.addArgumentsToBuilder(literal("export"), builder -> builder.then(
+                objectType.addArgumentsToBuilder(literal("export").requires(s -> s.hasPermissionLevel(permissionLevel)), builder -> builder.then(
                     argument("compress", BoolArgumentType.bool()).executes(
                         context -> export(context, BoolArgumentType.getBool(context, "compress"), objectType.getObject(context))
                     )
@@ -71,7 +73,7 @@ public class DataCommandExtras {
 
         for (ObjectType objectType : DataCommand.TARGET_OBJECT_TYPES) {
             data.then(
-                objectType.addArgumentsToBuilder(literal("import"), builder -> builder.then(
+                objectType.addArgumentsToBuilder(literal("import").requires(s -> s.hasPermissionLevel(permissionLevel)), builder -> builder.then(
                     literal("from").then(
                         literal("filebin").then(
                             argument("binId", StringArgumentType.word()).executes(
